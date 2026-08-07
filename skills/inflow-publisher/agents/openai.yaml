@@ -1,0 +1,4 @@
+interface:
+  display_name: "inflow Publisher"
+  short_description: "Publish reports, posts, and attachments safely to inflow"
+  default_prompt: "Use $inflow-publisher to publish this report to inflow as a draft."
