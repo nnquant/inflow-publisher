@@ -2,6 +2,13 @@
 
 All notable changes to `inflow-publisher` are documented here.
 
+## [0.1.1] - 2026-08-10
+
+- Raised short-post creation and editing from 140 to 500 Unicode graphemes.
+- Added 500/501-grapheme CLI boundary regression tests for creation and editing.
+- Updated short posts to accept at most 9 attachments and articles at most 10.
+- Replaced the obsolete presigned upload flow with API-managed multipart uploads.
+
 ## [0.1.0] - 2026-08-07
 
 Initial public release.

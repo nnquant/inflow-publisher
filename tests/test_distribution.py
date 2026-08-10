@@ -28,7 +28,7 @@ class DistributionTest(unittest.TestCase):
     def test_skill_identity_and_release_version(self) -> None:
         skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         self.assertRegex(skill_text, r"(?m)^name: inflow-publisher$")
-        self.assertEqual("0.1.0", (ROOT / "VERSION").read_text(encoding="utf-8").strip())
+        self.assertEqual("0.1.1", (ROOT / "VERSION").read_text(encoding="utf-8").strip())
 
     def test_distribution_contains_no_live_api_key(self) -> None:
         findings: list[str] = []

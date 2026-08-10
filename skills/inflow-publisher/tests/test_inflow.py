@@ -56,18 +56,9 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         self.record(body)
-        if self.path == "/api/v1/agent/uploads/presign":
+        if self.path == "/api/v1/agent/uploads":
             return self.respond(
                 201,
-                {
-                    "attachment": {"id": "f1", "url": f"{self.base_url}/stable/f1"},
-                    "upload_url": f"{self.base_url}/objects/f1",
-                    "upload_headers": {"Content-Type": "image/png"},
-                },
-            )
-        if self.path == "/api/v1/agent/uploads/f1/complete":
-            return self.respond(
-                200,
                 {
                     "attachment": {
                         "id": "f1",
@@ -84,13 +75,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {"content": {"id": "c1", "version": 2}})
         self.respond(404, {"code": "NOT_FOUND", "message": "missing"})
 
-    def do_PUT(self) -> None:
+    def do_PATCH(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
-        self.record(self.rfile.read(length))
-        self.send_response(200)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
+        body = self.rfile.read(length)
+        self.record(body)
+        if self.path == "/api/v1/agent/contents/c1":
+            return self.respond(200, {"content": {"id": "c1", "version": 2}})
+        self.respond(404, {"code": "NOT_FOUND", "message": "missing"})
 
 class CliTest(unittest.TestCase):
     @classmethod
@@ -133,8 +124,54 @@ class CliTest(unittest.TestCase):
         self.assertEqual(post["idempotency"], "daily-2026-08-04")
         self.assertNotIn("ifk_test-secret", output + error)
 
-    def test_upload_does_not_send_api_key_to_storage(self) -> None:
-        work = Path.cwd() / "work" / "skill-cli-test"
+    def test_post_accepts_500_and_rejects_501_graphemes(self) -> None:
+        status, output, error = self.run_cli(
+            "post",
+            "--text",
+            "字" * 500,
+            "--idempotency-key",
+            "post-500-boundary",
+        )
+        self.assertEqual(status, 0, error)
+        request = next(
+            item for item in reversed(Handler.requests) if item["path"].endswith("/posts")
+        )
+        self.assertEqual(json.loads(request["body"])["text"], "字" * 500)
+
+        request_count = len(Handler.requests)
+        status, output, error = self.run_cli(
+            "post",
+            "--text",
+            "字" * 501,
+            "--idempotency-key",
+            "post-501-boundary",
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(output, "")
+        self.assertIn("1-500 user-visible characters (got 501)", error)
+        self.assertEqual(len(Handler.requests), request_count)
+
+    def test_edit_post_accepts_500_and_rejects_501_graphemes(self) -> None:
+        status, output, error = self.run_cli("edit", "c1", "--text", "字" * 500)
+        self.assertEqual(status, 0, error)
+        request = next(
+            item
+            for item in reversed(Handler.requests)
+            if item["method"] == "PATCH" and item["path"].endswith("/contents/c1")
+        )
+        self.assertEqual(json.loads(request["body"])["text"], "字" * 500)
+
+        patch_count = sum(item["method"] == "PATCH" for item in Handler.requests)
+        status, output, error = self.run_cli("edit", "c1", "--text", "字" * 501)
+        self.assertEqual(status, 1)
+        self.assertEqual(output, "")
+        self.assertIn("1-500 user-visible characters (got 501)", error)
+        self.assertEqual(
+            sum(item["method"] == "PATCH" for item in Handler.requests), patch_count
+        )
+
+    def test_upload_is_proxied_by_inflow_api(self) -> None:
+        work = Path(__file__).parents[3] / "work" / "skill-cli-test"
         work.mkdir(parents=True, exist_ok=True, mode=0o777)
         image = work / "chart.png"
         image.write_bytes(b"not-a-real-png")
@@ -142,15 +179,20 @@ class CliTest(unittest.TestCase):
             status, output, error = self.run_cli("upload", str(image))
             self.assertEqual(status, 0, error)
             self.assertEqual(json.loads(output)["attachment"]["id"], "f1")
-            put = next(item for item in reversed(Handler.requests) if item["method"] == "PUT")
-            self.assertIsNone(put["authorization"])
-            self.assertEqual(put["body"], b"not-a-real-png")
+            upload = next(
+                item
+                for item in reversed(Handler.requests)
+                if item["path"] == "/api/v1/agent/uploads"
+            )
+            self.assertEqual(upload["authorization"], "Bearer ifk_test-secret-never-print")
+            self.assertIn(b"not-a-real-png", upload["body"])
+            self.assertFalse(any(item["method"] == "PUT" for item in Handler.requests))
         finally:
             image.unlink(missing_ok=True)
             work.rmdir()
 
     def test_article_sends_optional_feed_caption(self) -> None:
-        work = Path.cwd() / "work" / "skill-cli-article-test"
+        work = Path(__file__).parents[3] / "work" / "skill-cli-article-test"
         work.mkdir(parents=True, exist_ok=True, mode=0o777)
         markdown = work / "report.md"
         markdown.write_text("# 研究结论\n\n这是完整正文。", encoding="utf-8")

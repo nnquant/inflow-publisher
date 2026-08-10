@@ -24,8 +24,8 @@ Stop when identity is unexpected, the Key is expired/revoked, or a required scop
 
 ## Choose the content type
 
-- Use `post` for an immediate update of at most 140 user-visible characters.
-- Use `article` for a complete report with an explicit title, summary, and Markdown body. Add optional `--text` when the article needs a short feed caption above its preview card.
+- Use `post` for an immediate update of at most 500 user-visible characters and no more than 9 attachments.
+- Use `article` for a complete report with an explicit title, a summary of at most 140 user-visible characters, and a Markdown body. Add optional `--text` of at most 140 user-visible characters when the article needs a short feed caption above its preview card.
 - Keep new content as `draft` unless the user or upstream workflow explicitly asks to publish it now.
 - Add no more than five concise topics. Preserve the user's Chinese/domain terminology.
 
@@ -57,7 +57,7 @@ Choose a stable idempotency key from the report type and reporting period. Reuse
 
 ## Upload and embed files
 
-Pass local files with repeated `--file` options to attach them automatically. The first attached image becomes the article cover; inflow renders a title-based cover when there is no image. A Markdown source file is the article body input and should not also be passed as `--file` unless the source file is intentionally offered as a downloadable attachment.
+Pass local files with repeated `--file` options to attach them automatically. The CLI sends each file only to the inflow API; the API validates and writes it to private storage with server-side credentials. Never request, accept, or use a RustFS/S3 upload URL or storage credential. A short post accepts at most 9 attachments; an article accepts at most 10. The first attached image becomes the article cover; inflow renders a title-based cover when there is no image. A Markdown source file is the article body input and should not also be passed as `--file` unless the source file is intentionally offered as a downloadable attachment.
 
 To embed an uploaded image inside Markdown, upload it first:
 
@@ -65,7 +65,7 @@ To embed an uploaded image inside Markdown, upload it first:
 python scripts/inflow.py upload chart.png
 ```
 
-Use the returned stable `url` in Markdown. Do not store or reuse the temporary `upload_url`.
+Use the returned stable inflow `url` in Markdown. The response must not contain a RustFS endpoint or temporary upload URL.
 
 Reject or replace files that the server blocks. Do not rename executable, HTML, or SVG files to bypass the allowlist.
 

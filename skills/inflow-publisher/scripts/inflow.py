@@ -12,6 +12,7 @@ import sys
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -81,13 +82,10 @@ class Client:
         payload: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         raw_body: bytes | None = None,
-        authenticated: bool = True,
-        absolute_url: bool = False,
     ) -> dict[str, Any]:
-        url = path if absolute_url else f"{self.base_url}{path}"
+        url = f"{self.base_url}{path}"
         request_headers = dict(headers or {})
-        if authenticated:
-            request_headers["Authorization"] = f"Bearer {self.api_key}"
+        request_headers["Authorization"] = f"Bearer {self.api_key}"
         body = raw_body
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -132,33 +130,35 @@ class Client:
         if size > 25 * 1024 * 1024:
             raise InflowError(f"file exceeds 25MB: {path}")
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        prepared = self.agent(
+        file_bytes = path.read_bytes()
+        digest = hashlib.sha256(file_bytes).hexdigest()
+        boundary = f"inflow-{uuid.uuid4().hex}"
+        safe_name = path.name.replace('"', "_")
+        encoded_name = urllib.parse.quote(path.name)
+        body = b"".join(
+            [
+                f"--{boundary}\r\n".encode(),
+                b'Content-Disposition: form-data; name="checksum_sha256"\r\n\r\n',
+                digest.encode(),
+                b"\r\n",
+                f"--{boundary}\r\n".encode(),
+                (
+                    'Content-Disposition: form-data; name="file"; '
+                    f'filename="{safe_name}"; filename*=UTF-8\'\'{encoded_name}\r\n'
+                ).encode("utf-8"),
+                f"Content-Type: {content_type}\r\n\r\n".encode(),
+                file_bytes,
+                b"\r\n",
+                f"--{boundary}--\r\n".encode(),
+            ]
+        )
+        uploaded = self.agent(
             "POST",
-            "/uploads/presign",
-            payload={
-                "filename": path.name,
-                "content_type": content_type,
-                "size_bytes": size,
-                "checksum_sha256": digest,
-            },
+            "/uploads",
+            raw_body=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
-        with path.open("rb") as stream:
-            self.request(
-                "PUT",
-                prepared["upload_url"],
-                raw_body=stream.read(),
-                headers=prepared.get(
-                    "upload_headers", {"Content-Type": content_type}
-                ),
-                authenticated=False,
-                absolute_url=True,
-            )
-        attachment_id = prepared["attachment"]["id"]
-        completed = self.agent(
-            "POST", f"/uploads/{attachment_id}/complete", payload={}
-        )
-        return completed["attachment"]
+        return uploaded["attachment"]
 
 
 def configured_client(args: argparse.Namespace) -> Client:
@@ -171,7 +171,11 @@ def configured_client(args: argparse.Namespace) -> Client:
     return Client(base_url, api_key, timeout=args.timeout, retries=args.retries)
 
 
-def upload_many(client: Client, files: list[str]) -> list[dict[str, Any]]:
+def upload_many(
+    client: Client, files: list[str], *, maximum: int
+) -> list[dict[str, Any]]:
+    if len(files) > maximum:
+        raise InflowError(f"at most {maximum} attachments are allowed")
     return [client.upload(Path(filename).expanduser().resolve()) for filename in files]
 
 
@@ -191,8 +195,8 @@ def command_upload(client: Client, args: argparse.Namespace) -> dict[str, Any]:
 
 def command_post(client: Client, args: argparse.Namespace) -> dict[str, Any]:
     text = read_text_argument(args.text, args.text_file, "text")
-    require_length(text, 140, "post text")
-    attachments = upload_many(client, args.file)
+    require_length(text, 500, "post text")
+    attachments = upload_many(client, args.file, maximum=9)
     key = args.idempotency_key or str(uuid.uuid4())
     return client.agent(
         "POST",
@@ -216,7 +220,7 @@ def command_article(client: Client, args: argparse.Namespace) -> dict[str, Any]:
     markdown = Path(args.markdown_file).read_text(encoding="utf-8")
     if not markdown.strip() or len(markdown) > 200_000:
         raise InflowError("Markdown body must contain 1-200000 characters")
-    attachments = upload_many(client, args.file)
+    attachments = upload_many(client, args.file, maximum=10)
     key = args.idempotency_key or str(uuid.uuid4())
     return client.agent(
         "POST",
@@ -253,7 +257,7 @@ def command_edit(client: Client, args: argparse.Namespace) -> dict[str, Any]:
                 require_length(text, 140, "article caption")
             payload["text"] = text or None
         else:
-            require_length(text, 140, "post text")
+            require_length(text, 500, "post text")
             payload["text"] = text
     if args.title is not None:
         require_length(args.title, 120, "article title")
@@ -269,7 +273,8 @@ def command_edit(client: Client, args: argparse.Namespace) -> dict[str, Any]:
     if args.topic is not None:
         payload["topics"] = args.topic
     if args.file:
-        attachments = upload_many(client, args.file)
+        maximum = 9 if current.get("kind") == "post" else 10
+        attachments = upload_many(client, args.file, maximum=maximum)
         payload["attachment_ids"] = [item["id"] for item in attachments]
     if len(payload) == 1:
         raise InflowError("provide at least one field to edit")
@@ -306,8 +311,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     post = commands.add_parser("post")
     post_text = post.add_mutually_exclusive_group(required=True)
-    post_text.add_argument("--text")
-    post_text.add_argument("--text-file")
+    post_text.add_argument("--text", help="post body, up to 500 user-visible characters")
+    post_text.add_argument(
+        "--text-file", help="UTF-8 post body file, up to 500 user-visible characters"
+    )
     post.add_argument("--topic", action="append", default=[])
     post.add_argument("--file", action="append", default=[])
     post.add_argument("--status", choices=["draft", "published"], default="draft")
